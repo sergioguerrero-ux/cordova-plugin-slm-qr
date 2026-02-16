@@ -50,6 +50,18 @@ var SLMQR = {
      */
     generateQR: function (data, options, successCallback, errorCallback) {
         exec(successCallback, errorCallback, 'SLMQR', 'generateQR', [data, options || {}]);
+    },
+
+    openQRPreview: function (options, successCallback, errorCallback) {
+        exec(successCallback, errorCallback, 'SLMQR', 'openQRPreview', [options || {}]);
+    },
+
+    closeQRPreview: function (successCallback, errorCallback) {
+        exec(successCallback, errorCallback, 'SLMQR', 'closeQRPreview', []);
+    },
+
+    onQRDetected: function (successCallback, errorCallback) {
+        exec(successCallback, errorCallback, 'SLMQR', 'onQRDetected', []);
     }
 };
 

@@ -2,10 +2,18 @@ import AVFoundation
 import CoreImage
 import UIKit
 
-@objc(SLMQR) class SLMQR: CDVPlugin {
+@objc(SLMQR) class SLMQR: CDVPlugin, AVCaptureMetadataOutputObjectsDelegate {
 
     private var scanCallbackId: String?
     private var scanMode: String = "qr" // "qr" or "barcode"
+
+    // Embedded preview
+    private var embeddedPreviewView: UIView?
+    private var embeddedSession: AVCaptureSession?
+    private var detectedCallbackId: String?
+    private var lastDetectedValue: String?
+    private var lastDetectedTime: TimeInterval = 0
+    private let embeddedViewTag = 98765
 
     // MARK: - scanQR
 
@@ -103,7 +111,136 @@ import UIKit
         }
     }
 
-    // MARK: - Scanner
+    // MARK: - Embedded QR Preview
+
+    @objc(openQRPreview:)
+    func openQRPreview(command: CDVInvokedUrlCommand) {
+        closeEmbeddedPreview()
+
+        let options = command.argument(at: 0) as? [String: Any] ?? [:]
+        let x = options["x"] as? CGFloat ?? 0
+        let y = options["y"] as? CGFloat ?? 0
+        let width = options["width"] as? CGFloat ?? UIScreen.main.bounds.width
+        let height = options["height"] as? CGFloat ?? 300
+        let cameraPosition = options["camera"] as? String ?? "back"
+
+        DispatchQueue.main.async {
+            guard let window = UIApplication.shared.windows.first(where: { $0.isKeyWindow }) else {
+                let result = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "No se encontro la ventana principal")
+                self.commandDelegate.send(result, callbackId: command.callbackId)
+                return
+            }
+
+            let container = UIView(frame: CGRect(x: x, y: y, width: width, height: height))
+            container.clipsToBounds = true
+            container.backgroundColor = .black
+            container.tag = self.embeddedViewTag
+
+            let session = AVCaptureSession()
+            session.sessionPreset = .high
+
+            let position: AVCaptureDevice.Position = cameraPosition == "front" ? .front : .back
+            guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position),
+                  let input = try? AVCaptureDeviceInput(device: device) else {
+                let result = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Camara no disponible")
+                self.commandDelegate.send(result, callbackId: command.callbackId)
+                return
+            }
+
+            if session.canAddInput(input) { session.addInput(input) }
+
+            let output = AVCaptureMetadataOutput()
+            if session.canAddOutput(output) {
+                session.addOutput(output)
+                output.setMetadataObjectsDelegate(self, queue: .main)
+                output.metadataObjectTypes = [.qr, .ean8, .ean13, .upce, .code39, .code93,
+                                               .code128, .pdf417, .aztec, .itf14, .dataMatrix, .interleaved2of5]
+            }
+
+            let previewLayer = AVCaptureVideoPreviewLayer(session: session)
+            previewLayer.videoGravity = .resizeAspectFill
+            previewLayer.frame = container.bounds
+            container.layer.addSublayer(previewLayer)
+
+            window.addSubview(container)
+            self.embeddedPreviewView = container
+            self.embeddedSession = session
+
+            DispatchQueue.global(qos: .userInitiated).async { session.startRunning() }
+
+            let info: [String: Any] = ["opened": true]
+            let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: info)
+            self.commandDelegate.send(result, callbackId: command.callbackId)
+        }
+    }
+
+    @objc(closeQRPreview:)
+    func closeQRPreview(command: CDVInvokedUrlCommand) {
+        DispatchQueue.main.async {
+            self.closeEmbeddedPreview()
+            let info: [String: Any] = ["closed": true]
+            let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: info)
+            self.commandDelegate.send(result, callbackId: command.callbackId)
+        }
+    }
+
+    @objc(onQRDetected:)
+    func onQRDetected(command: CDVInvokedUrlCommand) {
+        detectedCallbackId = command.callbackId
+    }
+
+    private func closeEmbeddedPreview() {
+        embeddedSession?.stopRunning()
+        embeddedSession = nil
+        embeddedPreviewView?.removeFromSuperview()
+        embeddedPreviewView = nil
+        detectedCallbackId = nil
+        lastDetectedValue = nil
+    }
+
+    // AVCaptureMetadataOutputObjectsDelegate — embedded preview
+    func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput metadataObjects: [AVMetadataObject], from connection: AVCaptureConnection) {
+        guard let callbackId = detectedCallbackId else { return }
+        guard let metadataObject = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
+              let stringValue = metadataObject.stringValue else { return }
+
+        let now = Date().timeIntervalSince1970
+        if stringValue == lastDetectedValue && (now - lastDetectedTime) < 2.0 { return }
+
+        lastDetectedValue = stringValue
+        lastDetectedTime = now
+
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.impactOccurred()
+
+        var format = "UNKNOWN"
+        switch metadataObject.type {
+        case .qr: format = "QR_CODE"
+        case .ean8: format = "EAN_8"
+        case .ean13: format = "EAN_13"
+        case .upce: format = "UPC_E"
+        case .code39: format = "CODE_39"
+        case .code93: format = "CODE_93"
+        case .code128: format = "CODE_128"
+        case .pdf417: format = "PDF_417"
+        case .aztec: format = "AZTEC"
+        case .itf14: format = "ITF_14"
+        case .dataMatrix: format = "DATA_MATRIX"
+        case .interleaved2of5: format = "ITF"
+        default: format = metadataObject.type.rawValue
+        }
+
+        var info: [String: Any] = ["text": stringValue, "format": format]
+        if let rawData = stringValue.data(using: .utf8) {
+            info["rawBytes"] = rawData.base64EncodedString()
+        }
+
+        let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: info)
+        result?.setKeepCallbackAs(true)
+        commandDelegate.send(result, callbackId: callbackId)
+    }
+
+    // MARK: - Fullscreen Scanner
 
     private func openScanner(options: [String: Any]) {
         let template = options["template"] as? String ?? "simple"
@@ -136,7 +273,11 @@ import UIKit
                 self.scanCallbackId = nil
             }
 
-            self.viewController.present(scannerVC, animated: true)
+            var topVC: UIViewController? = self.viewController
+            while let presented = topVC?.presentedViewController {
+                topVC = presented
+            }
+            topVC?.present(scannerVC, animated: true)
         }
     }
 

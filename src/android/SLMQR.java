@@ -50,6 +50,7 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel;
 
 import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaPlugin;
+import org.apache.cordova.PluginResult;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -64,10 +65,20 @@ public class SLMQR extends CordovaPlugin {
 
     private static final String TAG = "SLMQR";
     private static final int CAMERA_PERMISSION_REQUEST = 200;
+    private static final int CAMERA_PERMISSION_PREVIEW = 201;
 
     private CallbackContext scanCallback;
     private String pendingScanMode;
     private JSONObject pendingScanOptions;
+
+    // Embedded preview
+    private FrameLayout embeddedContainer;
+    private ProcessCameraProvider embeddedCameraProvider;
+    private CallbackContext detectedCallback;
+    private CallbackContext pendingPreviewCallback;
+    private JSONObject pendingPreviewOptions;
+    private String lastDetectedValue;
+    private long lastDetectedTime = 0;
 
     @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) throws JSONException {
@@ -88,6 +99,21 @@ public class SLMQR extends CordovaPlugin {
                 String data = args.optString(0, "");
                 JSONObject options = args.optJSONObject(1);
                 generateQR(data, options != null ? options : new JSONObject(), callbackContext);
+                return true;
+            case "openQRPreview":
+                pendingPreviewOptions = args.optJSONObject(0);
+                pendingPreviewCallback = callbackContext;
+                if (!hasCameraPermission()) {
+                    cordova.requestPermission(this, CAMERA_PERMISSION_PREVIEW, Manifest.permission.CAMERA);
+                } else {
+                    openQRPreview(pendingPreviewOptions, callbackContext);
+                }
+                return true;
+            case "closeQRPreview":
+                closeQRPreview(callbackContext);
+                return true;
+            case "onQRDetected":
+                detectedCallback = callbackContext;
                 return true;
             default:
                 return false;
@@ -112,14 +138,21 @@ public class SLMQR extends CordovaPlugin {
 
     @Override
     public void onRequestPermissionResult(int requestCode, String[] permissions, int[] grantResults) throws JSONException {
+        boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+
         if (requestCode == CAMERA_PERMISSION_REQUEST) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            if (granted) {
                 openScannerActivity();
-            } else {
-                if (scanCallback != null) {
-                    scanCallback.error("Permiso de camara denegado");
-                    scanCallback = null;
-                }
+            } else if (scanCallback != null) {
+                scanCallback.error("Permiso de camara denegado");
+                scanCallback = null;
+            }
+        } else if (requestCode == CAMERA_PERMISSION_PREVIEW) {
+            if (granted && pendingPreviewCallback != null) {
+                openQRPreview(pendingPreviewOptions, pendingPreviewCallback);
+            } else if (pendingPreviewCallback != null) {
+                pendingPreviewCallback.error("Permiso de camara denegado");
+                pendingPreviewCallback = null;
             }
         }
     }
@@ -193,8 +226,9 @@ public class SLMQR extends CordovaPlugin {
                     flashBtn = null;
                 }
 
-                // Add to window
-                activity.addContentView(container, new FrameLayout.LayoutParams(
+                // Add to DecorView (on top of InAppBrowser)
+                ViewGroup decorView = (ViewGroup) activity.getWindow().getDecorView();
+                decorView.addView(container, new FrameLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
                 ));
@@ -383,6 +417,163 @@ public class SLMQR extends CordovaPlugin {
     private int dpToPx(Activity activity, int dp) {
         float density = activity.getResources().getDisplayMetrics().density;
         return Math.round(dp * density);
+    }
+
+    // ============================================
+    // Embedded QR Preview
+    // ============================================
+
+    private void openQRPreview(JSONObject options, CallbackContext callbackContext) {
+        closeEmbeddedPreview();
+
+        if (options == null) options = new JSONObject();
+        final Activity activity = cordova.getActivity();
+        final float density = activity.getResources().getDisplayMetrics().density;
+
+        final int xPx = Math.round((float) options.optDouble("x", 0) * density);
+        final int yPx = Math.round((float) options.optDouble("y", 0) * density);
+        final int wPx = Math.round((float) options.optDouble("width",
+                activity.getResources().getDisplayMetrics().widthPixels / density) * density);
+        final int hPx = Math.round((float) options.optDouble("height", 300) * density);
+        final boolean useFrontCamera = "front".equals(options.optString("camera", "back"));
+
+        activity.runOnUiThread(() -> {
+            FrameLayout container = new FrameLayout(activity);
+            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(wPx, hPx);
+            params.leftMargin = xPx;
+            params.topMargin = yPx;
+            container.setLayoutParams(params);
+            container.setBackgroundColor(Color.BLACK);
+
+            PreviewView previewView = new PreviewView(activity);
+            previewView.setLayoutParams(new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+            ));
+            container.addView(previewView);
+
+            ViewGroup decorView = (ViewGroup) activity.getWindow().getDecorView();
+            decorView.addView(container);
+            embeddedContainer = container;
+
+            ListenableFuture<ProcessCameraProvider> future = ProcessCameraProvider.getInstance(activity);
+            future.addListener(() -> {
+                try {
+                    ProcessCameraProvider cameraProvider = future.get();
+                    embeddedCameraProvider = cameraProvider;
+
+                    Preview preview = new Preview.Builder().build();
+                    preview.setSurfaceProvider(previewView.getSurfaceProvider());
+
+                    CameraSelector selector = useFrontCamera
+                            ? CameraSelector.DEFAULT_FRONT_CAMERA
+                            : CameraSelector.DEFAULT_BACK_CAMERA;
+
+                    BarcodeScannerOptions scannerOpts = new BarcodeScannerOptions.Builder()
+                            .setBarcodeFormats(
+                                    Barcode.FORMAT_QR_CODE,
+                                    Barcode.FORMAT_EAN_8, Barcode.FORMAT_EAN_13,
+                                    Barcode.FORMAT_UPC_A, Barcode.FORMAT_UPC_E,
+                                    Barcode.FORMAT_CODE_39, Barcode.FORMAT_CODE_93,
+                                    Barcode.FORMAT_CODE_128, Barcode.FORMAT_PDF417,
+                                    Barcode.FORMAT_AZTEC, Barcode.FORMAT_ITF,
+                                    Barcode.FORMAT_DATA_MATRIX
+                            ).build();
+
+                    BarcodeScanner scanner = BarcodeScanning.getClient(scannerOpts);
+
+                    ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
+                            .setTargetResolution(new Size(1280, 720))
+                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                            .build();
+
+                    imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(activity), imageProxy -> {
+                        @SuppressWarnings("UnsafeOptInUsageError")
+                        android.media.Image mediaImage = imageProxy.getImage();
+                        if (mediaImage == null) { imageProxy.close(); return; }
+
+                        InputImage image = InputImage.fromMediaImage(mediaImage,
+                                imageProxy.getImageInfo().getRotationDegrees());
+
+                        scanner.process(image)
+                                .addOnSuccessListener(barcodes -> {
+                                    if (!barcodes.isEmpty() && detectedCallback != null) {
+                                        Barcode barcode = barcodes.get(0);
+                                        String value = barcode.getRawValue();
+                                        long now = System.currentTimeMillis();
+
+                                        if (value != null && (!value.equals(lastDetectedValue) || (now - lastDetectedTime) > 2000)) {
+                                            lastDetectedValue = value;
+                                            lastDetectedTime = now;
+
+                                            Vibrator v = (Vibrator) activity.getSystemService(Activity.VIBRATOR_SERVICE);
+                                            if (v != null) {
+                                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                                    v.vibrate(VibrationEffect.createOneShot(100, VibrationEffect.DEFAULT_AMPLITUDE));
+                                                } else {
+                                                    v.vibrate(100);
+                                                }
+                                            }
+
+                                            JSONObject result = new JSONObject();
+                                            try {
+                                                result.put("text", value);
+                                                result.put("format", formatToString(barcode.getFormat()));
+                                                if (barcode.getRawBytes() != null) {
+                                                    result.put("rawBytes", Base64.encodeToString(barcode.getRawBytes(), Base64.NO_WRAP));
+                                                }
+                                            } catch (JSONException e) {
+                                                Log.e(TAG, "JSON error: " + e.getMessage());
+                                            }
+
+                                            PluginResult pluginResult = new PluginResult(PluginResult.Status.OK, result);
+                                            pluginResult.setKeepCallback(true);
+                                            detectedCallback.sendPluginResult(pluginResult);
+                                        }
+                                    }
+                                    imageProxy.close();
+                                })
+                                .addOnFailureListener(e -> imageProxy.close());
+                    });
+
+                    cameraProvider.bindToLifecycle((LifecycleOwner) activity, selector, preview, imageAnalysis);
+
+                    JSONObject result = new JSONObject();
+                    result.put("opened", true);
+                    callbackContext.success(result);
+
+                } catch (Exception e) {
+                    Log.e(TAG, "Camera init error: " + e.getMessage());
+                    callbackContext.error("Error iniciando camara: " + e.getMessage());
+                }
+            }, ContextCompat.getMainExecutor(activity));
+        });
+    }
+
+    private void closeQRPreview(CallbackContext callbackContext) {
+        cordova.getActivity().runOnUiThread(() -> {
+            closeEmbeddedPreview();
+            try {
+                JSONObject result = new JSONObject();
+                result.put("closed", true);
+                callbackContext.success(result);
+            } catch (JSONException e) {
+                callbackContext.error(e.getMessage());
+            }
+        });
+    }
+
+    private void closeEmbeddedPreview() {
+        if (embeddedCameraProvider != null) {
+            embeddedCameraProvider.unbindAll();
+            embeddedCameraProvider = null;
+        }
+        if (embeddedContainer != null && embeddedContainer.getParent() != null) {
+            ((ViewGroup) embeddedContainer.getParent()).removeView(embeddedContainer);
+            embeddedContainer = null;
+        }
+        lastDetectedValue = null;
+        lastDetectedTime = 0;
     }
 
     // ============================================
