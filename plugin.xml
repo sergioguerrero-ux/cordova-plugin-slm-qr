@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    id="cordova-plugin-slm-qr"
+    version="1.0.0">
+
+    <name>SLM QR</name>
+    <description>Plugin de escaneo QR/barcode con overlays personalizados y generacion de QR para iOS y Android</description>
+    <license>MIT</license>
+    <keywords>cordova,plugin,qr,barcode,scanner,overlay,slm</keywords>
+    <repo>https://github.com/sergioguerrero-ux/cordova-plugin-slm-qr.git</repo>
+    <issue>https://github.com/sergioguerrero-ux/cordova-plugin-slm-qr/issues</issue>
+
+    <js-module src="www/SLMQR.js" name="SLMQR">
+        <clobbers target="SLMQR" />
+    </js-module>
+
+    <!-- ==================== iOS ==================== -->
+    <platform name="ios">
+        <preference name="SWIFTVERSION" default="5.0" />
+
+        <config-file target="config.xml" parent="/*">
+            <feature name="SLMQR">
+                <param name="ios-package" value="SLMQR" />
+            </feature>
+        </config-file>
+
+        <config-file target="*-Info.plist" parent="NSCameraUsageDescription">
+            <string>Esta app necesita acceder a la camara para escanear codigos QR y de barras.</string>
+        </config-file>
+
+        <source-file src="src/ios/SLMQR.swift" />
+
+        <framework src="AVFoundation.framework" />
+        <framework src="CoreImage.framework" />
+    </platform>
+
+    <!-- ==================== Android ==================== -->
+    <platform name="android">
+        <config-file target="res/xml/config.xml" parent="/*">
+            <feature name="SLMQR">
+                <param name="android-package" value="com.slm.qr.SLMQR" />
+            </feature>
+        </config-file>
+
+        <config-file target="AndroidManifest.xml" parent="/*">
+            <uses-permission android:name="android.permission.CAMERA" />
+            <uses-permission android:name="android.permission.VIBRATE" />
+        </config-file>
+
+        <source-file src="src/android/SLMQR.java"
+                     target-dir="src/com/slm/qr" />
+
+        <framework src="com.google.mlkit:barcode-scanning:17.2.0" />
+        <framework src="com.google.zxing:core:3.5.2" />
+    </platform>
+
+</plugin>

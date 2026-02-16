@@ -1,0 +1,48 @@
+{
+    "name": "cordova-plugin-slm-qr",
+    "version": "1.0.0",
+    "description": "Cordova plugin for QR/barcode scanning with custom overlays and QR generation on iOS and Android",
+    "main": "www/SLMQR.js",
+    "scripts": {
+        "test": "echo \"Error: no test specified\" && exit 1"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/sergioguerrero-ux/cordova-plugin-slm-qr.git"
+    },
+    "keywords": [
+        "cordova",
+        "plugin",
+        "qr",
+        "barcode",
+        "scanner",
+        "overlay",
+        "ecosystem:cordova",
+        "cordova-android",
+        "cordova-ios"
+    ],
+    "engines": {
+        "cordovaDependencies": {
+            ">=8.0.0": {
+                "cordova-android": ">=9.0.0",
+                "cordova-ios": ">=6.0.0"
+            }
+        }
+    },
+    "author": "Sergio Guerrero",
+    "license": "MIT",
+    "bugs": {
+        "url": "https://github.com/sergioguerrero-ux/cordova-plugin-slm-qr/issues"
+    },
+    "homepage": "https://github.com/sergioguerrero-ux/cordova-plugin-slm-qr#readme",
+    "cordova": {
+        "id": "cordova-plugin-slm-qr",
+        "platforms": [
+            "android",
+            "ios"
+        ]
+    },
+    "peerDependencies": {
+        "cordova": ">=8.0.0"
+    }
+}
