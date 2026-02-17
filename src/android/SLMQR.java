@@ -484,6 +484,8 @@ public class SLMQR extends CordovaPlugin {
         if (options == null) options = new JSONObject();
         final Activity activity = cordova.getActivity();
         final float density = activity.getResources().getDisplayMetrics().density;
+        final int screenW = activity.getResources().getDisplayMetrics().widthPixels;
+        final int screenH = activity.getResources().getDisplayMetrics().heightPixels;
 
         final int xPx = Math.round((float) options.optDouble("x", 0) * density);
         final int yPx = Math.round((float) options.optDouble("y", 0) * density);
@@ -492,139 +494,210 @@ public class SLMQR extends CordovaPlugin {
         final int hPx = Math.round((float) options.optDouble("height", 300) * density);
         final boolean useFrontCamera = "front".equals(options.optString("camera", "back"));
 
-        Log.d(TAG, "  density=" + density + " x=" + xPx + " y=" + yPx + " w=" + wPx + " h=" + hPx);
+        Log.d(TAG, "  screen=" + screenW + "x" + screenH + " density=" + density);
+        Log.d(TAG, "  input dp: x=" + options.optDouble("x", 0) + " y=" + options.optDouble("y", 0)
+                + " w=" + options.optDouble("width", 0) + " h=" + options.optDouble("height", 0));
+        Log.d(TAG, "  computed px: x=" + xPx + " y=" + yPx + " w=" + wPx + " h=" + hPx);
         Log.d(TAG, "  useFrontCamera=" + useFrontCamera);
 
         activity.runOnUiThread(() -> {
-            Log.d(TAG, "  [UI thread] Creating embedded preview container...");
-            FrameLayout container = new FrameLayout(activity);
-            container.setBackgroundColor(Color.BLACK);
+            try {
+                Log.d(TAG, "  [UI] Creating container...");
+                FrameLayout container = new FrameLayout(activity);
+                container.setBackgroundColor(Color.RED); // RED para diagnostico visual
 
-            PreviewView previewView = new PreviewView(activity);
-            previewView.setImplementationMode(PreviewView.ImplementationMode.COMPATIBLE);
-            previewView.setLayoutParams(new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-            ));
-            container.addView(previewView);
+                // Debug label para verificar que el window es visible
+                TextView debugLabel = new TextView(activity);
+                debugLabel.setText("SLMQR CAMERA");
+                debugLabel.setTextColor(Color.WHITE);
+                debugLabel.setTextSize(20);
+                debugLabel.setBackgroundColor(Color.RED);
+                FrameLayout.LayoutParams debugParams = new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                debugParams.gravity = Gravity.CENTER;
+                debugLabel.setLayoutParams(debugParams);
+                container.addView(debugLabel);
 
-            // Use WindowManager for guaranteed z-ordering above InAppBrowser
-            Log.d(TAG, "  [UI thread] Adding via WindowManager (above InAppBrowser)...");
-            WindowManager.LayoutParams wlp = new WindowManager.LayoutParams(
-                    wPx, hPx,
-                    WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-                    PixelFormat.TRANSLUCENT
-            );
-            wlp.gravity = Gravity.TOP | Gravity.LEFT;
-            wlp.x = xPx;
-            wlp.y = yPx;
-            wlp.token = activity.getWindow().getDecorView().getWindowToken();
+                PreviewView previewView = new PreviewView(activity);
+                previewView.setImplementationMode(PreviewView.ImplementationMode.COMPATIBLE);
+                previewView.setLayoutParams(new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                ));
+                container.addView(previewView);
+                Log.d(TAG, "  [UI] PreviewView mode=" + previewView.getImplementationMode());
 
-            WindowManager wm = (WindowManager) activity.getSystemService(Activity.WINDOW_SERVICE);
-            wm.addView(container, wlp);
-            embeddedContainer = container;
-            Log.d(TAG, "  [UI thread] Container added via WindowManager OK");
+                // ---- Intento 1: WindowManager TYPE_APPLICATION_PANEL ----
+                Log.d(TAG, "  [UI] Trying WindowManager TYPE_APPLICATION_PANEL...");
+                WindowManager wm = (WindowManager) activity.getSystemService(Activity.WINDOW_SERVICE);
+                android.view.View decorView = activity.getWindow().getDecorView();
+                android.os.IBinder windowToken = decorView.getWindowToken();
+                Log.d(TAG, "  [UI] decorView=" + decorView);
+                Log.d(TAG, "  [UI] windowToken=" + windowToken);
+                Log.d(TAG, "  [UI] decorView.isShown=" + decorView.isShown());
 
-            ListenableFuture<ProcessCameraProvider> future = ProcessCameraProvider.getInstance(activity);
-            Log.d(TAG, "  [UI thread] CameraProvider future obtained, adding listener...");
-            future.addListener(() -> {
-                try {
-                    Log.d(TAG, "  [Preview CameraX] Getting camera provider...");
-                    ProcessCameraProvider cameraProvider = future.get();
-                    embeddedCameraProvider = cameraProvider;
-                    Log.d(TAG, "  [Preview CameraX] Camera provider obtained");
-
-                    Preview preview = new Preview.Builder().build();
-                    preview.setSurfaceProvider(previewView.getSurfaceProvider());
-                    Log.d(TAG, "  [Preview CameraX] Preview built, surface provider set");
-
-                    CameraSelector selector = useFrontCamera
-                            ? CameraSelector.DEFAULT_FRONT_CAMERA
-                            : CameraSelector.DEFAULT_BACK_CAMERA;
-
-                    BarcodeScannerOptions scannerOpts = new BarcodeScannerOptions.Builder()
-                            .setBarcodeFormats(
-                                    Barcode.FORMAT_QR_CODE,
-                                    Barcode.FORMAT_EAN_8, Barcode.FORMAT_EAN_13,
-                                    Barcode.FORMAT_UPC_A, Barcode.FORMAT_UPC_E,
-                                    Barcode.FORMAT_CODE_39, Barcode.FORMAT_CODE_93,
-                                    Barcode.FORMAT_CODE_128, Barcode.FORMAT_PDF417,
-                                    Barcode.FORMAT_AZTEC, Barcode.FORMAT_ITF,
-                                    Barcode.FORMAT_DATA_MATRIX
-                            ).build();
-
-                    BarcodeScanner scanner = BarcodeScanning.getClient(scannerOpts);
-
-                    ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
-                            .setTargetResolution(new Size(1280, 720))
-                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                            .build();
-
-                    imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(activity), imageProxy -> {
-                        @SuppressWarnings("UnsafeOptInUsageError")
-                        android.media.Image mediaImage = imageProxy.getImage();
-                        if (mediaImage == null) { imageProxy.close(); return; }
-
-                        InputImage image = InputImage.fromMediaImage(mediaImage,
-                                imageProxy.getImageInfo().getRotationDegrees());
-
-                        scanner.process(image)
-                                .addOnSuccessListener(barcodes -> {
-                                    if (!barcodes.isEmpty() && detectedCallback != null) {
-                                        Barcode barcode = barcodes.get(0);
-                                        String value = barcode.getRawValue();
-                                        long now = System.currentTimeMillis();
-
-                                        if (value != null && (!value.equals(lastDetectedValue) || (now - lastDetectedTime) > 2000)) {
-                                            lastDetectedValue = value;
-                                            lastDetectedTime = now;
-
-                                            Vibrator v = (Vibrator) activity.getSystemService(Activity.VIBRATOR_SERVICE);
-                                            if (v != null) {
-                                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                                    v.vibrate(VibrationEffect.createOneShot(100, VibrationEffect.DEFAULT_AMPLITUDE));
-                                                } else {
-                                                    v.vibrate(100);
-                                                }
-                                            }
-
-                                            JSONObject result = new JSONObject();
-                                            try {
-                                                result.put("text", value);
-                                                result.put("format", formatToString(barcode.getFormat()));
-                                                if (barcode.getRawBytes() != null) {
-                                                    result.put("rawBytes", Base64.encodeToString(barcode.getRawBytes(), Base64.NO_WRAP));
-                                                }
-                                            } catch (JSONException e) {
-                                                Log.e(TAG, "JSON error: " + e.getMessage());
-                                            }
-
-                                            PluginResult pluginResult = new PluginResult(PluginResult.Status.OK, result);
-                                            pluginResult.setKeepCallback(true);
-                                            detectedCallback.sendPluginResult(pluginResult);
-                                        }
-                                    }
-                                    imageProxy.close();
-                                })
-                                .addOnFailureListener(e -> imageProxy.close());
-                    });
-
-                    Log.d(TAG, "  [Preview CameraX] Binding to lifecycle...");
-                    cameraProvider.bindToLifecycle((LifecycleOwner) activity, selector, preview, imageAnalysis);
-                    Log.d(TAG, "  [Preview CameraX] Camera bound successfully!");
-
-                    JSONObject result = new JSONObject();
-                    result.put("opened", true);
-                    callbackContext.success(result);
-
-                } catch (Exception e) {
-                    Log.e(TAG, "  [Preview CameraX] EXCEPTION: " + e.getClass().getName() + ": " + e.getMessage());
-                    Log.e(TAG, "  [Preview CameraX] Stack trace:", e);
-                    callbackContext.error("Error iniciando camara: " + e.getMessage());
+                if (windowToken == null) {
+                    Log.w(TAG, "  [UI] windowToken is NULL! Falling back to DecorView.addView...");
+                    // Fallback sin WindowManager
+                    FrameLayout.LayoutParams fp = new FrameLayout.LayoutParams(wPx, hPx);
+                    fp.gravity = Gravity.TOP | Gravity.LEFT;
+                    fp.leftMargin = xPx;
+                    fp.topMargin = yPx;
+                    ((ViewGroup) decorView).addView(container, fp);
+                    container.bringToFront();
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        container.setTranslationZ(10000f);
+                    }
+                    Log.d(TAG, "  [UI] Fallback: added to DecorView with Z=10000");
+                } else {
+                    WindowManager.LayoutParams wlp = new WindowManager.LayoutParams(
+                            wPx, hPx,
+                            WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
+                            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                            PixelFormat.TRANSLUCENT
+                    );
+                    wlp.gravity = Gravity.TOP | Gravity.LEFT;
+                    wlp.x = xPx;
+                    wlp.y = yPx;
+                    wlp.token = windowToken;
+                    wm.addView(container, wlp);
+                    Log.d(TAG, "  [UI] WindowManager.addView OK type=APPLICATION_PANEL");
                 }
-            }, ContextCompat.getMainExecutor(activity));
+
+                embeddedContainer = container;
+
+                // Log post-layout state
+                container.post(() -> {
+                    Log.d(TAG, "  [UI-post] container.isShown=" + container.isShown());
+                    Log.d(TAG, "  [UI-post] container.getVisibility=" + container.getVisibility());
+                    Log.d(TAG, "  [UI-post] container.getWidth=" + container.getWidth() + " getHeight=" + container.getHeight());
+                    Log.d(TAG, "  [UI-post] container.getX=" + container.getX() + " getY=" + container.getY());
+                    Log.d(TAG, "  [UI-post] container parent=" + container.getParent());
+                    Log.d(TAG, "  [UI-post] previewView.isShown=" + previewView.isShown());
+                    Log.d(TAG, "  [UI-post] previewView.getWidth=" + previewView.getWidth() + " getHeight=" + previewView.getHeight());
+                    int[] loc = new int[2];
+                    container.getLocationOnScreen(loc);
+                    Log.d(TAG, "  [UI-post] container locationOnScreen=" + loc[0] + "," + loc[1]);
+                });
+
+                // Setup CameraX
+                Log.d(TAG, "  [UI] Setting up CameraX...");
+                ListenableFuture<ProcessCameraProvider> future = ProcessCameraProvider.getInstance(activity);
+                future.addListener(() -> {
+                    try {
+                        Log.d(TAG, "  [CameraX] Getting provider...");
+                        ProcessCameraProvider cameraProvider = future.get();
+                        embeddedCameraProvider = cameraProvider;
+                        cameraProvider.unbindAll();
+                        Log.d(TAG, "  [CameraX] Provider obtained, unbound all");
+
+                        Preview preview = new Preview.Builder().build();
+                        preview.setSurfaceProvider(previewView.getSurfaceProvider());
+                        Log.d(TAG, "  [CameraX] Preview built, surfaceProvider set");
+
+                        CameraSelector selector = useFrontCamera
+                                ? CameraSelector.DEFAULT_FRONT_CAMERA
+                                : CameraSelector.DEFAULT_BACK_CAMERA;
+                        Log.d(TAG, "  [CameraX] CameraSelector: " + (useFrontCamera ? "FRONT" : "BACK"));
+
+                        BarcodeScannerOptions scannerOpts = new BarcodeScannerOptions.Builder()
+                                .setBarcodeFormats(
+                                        Barcode.FORMAT_QR_CODE,
+                                        Barcode.FORMAT_EAN_8, Barcode.FORMAT_EAN_13,
+                                        Barcode.FORMAT_UPC_A, Barcode.FORMAT_UPC_E,
+                                        Barcode.FORMAT_CODE_39, Barcode.FORMAT_CODE_93,
+                                        Barcode.FORMAT_CODE_128, Barcode.FORMAT_PDF417,
+                                        Barcode.FORMAT_AZTEC, Barcode.FORMAT_ITF,
+                                        Barcode.FORMAT_DATA_MATRIX
+                                ).build();
+                        BarcodeScanner scanner = BarcodeScanning.getClient(scannerOpts);
+
+                        ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
+                                .setTargetResolution(new Size(1280, 720))
+                                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                                .build();
+
+                        imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(activity), imageProxy -> {
+                            @SuppressWarnings("UnsafeOptInUsageError")
+                            android.media.Image mediaImage = imageProxy.getImage();
+                            if (mediaImage == null) { imageProxy.close(); return; }
+
+                            InputImage image = InputImage.fromMediaImage(mediaImage,
+                                    imageProxy.getImageInfo().getRotationDegrees());
+
+                            scanner.process(image)
+                                    .addOnSuccessListener(barcodes -> {
+                                        if (!barcodes.isEmpty() && detectedCallback != null) {
+                                            Barcode barcode = barcodes.get(0);
+                                            String value = barcode.getRawValue();
+                                            long now = System.currentTimeMillis();
+
+                                            if (value != null && (!value.equals(lastDetectedValue) || (now - lastDetectedTime) > 2000)) {
+                                                lastDetectedValue = value;
+                                                lastDetectedTime = now;
+
+                                                Vibrator v = (Vibrator) activity.getSystemService(Activity.VIBRATOR_SERVICE);
+                                                if (v != null) {
+                                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                                        v.vibrate(VibrationEffect.createOneShot(100, VibrationEffect.DEFAULT_AMPLITUDE));
+                                                    } else {
+                                                        v.vibrate(100);
+                                                    }
+                                                }
+
+                                                JSONObject result = new JSONObject();
+                                                try {
+                                                    result.put("text", value);
+                                                    result.put("format", formatToString(barcode.getFormat()));
+                                                    if (barcode.getRawBytes() != null) {
+                                                        result.put("rawBytes", Base64.encodeToString(barcode.getRawBytes(), Base64.NO_WRAP));
+                                                    }
+                                                } catch (JSONException e) {
+                                                    Log.e(TAG, "JSON error: " + e.getMessage());
+                                                }
+
+                                                PluginResult pluginResult = new PluginResult(PluginResult.Status.OK, result);
+                                                pluginResult.setKeepCallback(true);
+                                                detectedCallback.sendPluginResult(pluginResult);
+                                            }
+                                        }
+                                        imageProxy.close();
+                                    })
+                                    .addOnFailureListener(e -> imageProxy.close());
+                        });
+
+                        Log.d(TAG, "  [CameraX] Binding to lifecycle...");
+                        Log.d(TAG, "  [CameraX] activity isLifecycleOwner=" + (activity instanceof LifecycleOwner));
+                        Camera camera = cameraProvider.bindToLifecycle((LifecycleOwner) activity, selector, preview, imageAnalysis);
+                        Log.d(TAG, "  [CameraX] BOUND! camera=" + camera);
+                        Log.d(TAG, "  [CameraX] hasFlashUnit=" + camera.getCameraInfo().hasFlashUnit());
+
+                        // Check PreviewView state after bind
+                        previewView.post(() -> {
+                            Log.d(TAG, "  [CameraX-post] previewView.isShown=" + previewView.isShown());
+                            Log.d(TAG, "  [CameraX-post] previewView.getWidth=" + previewView.getWidth());
+                            Log.d(TAG, "  [CameraX-post] previewView.getHeight=" + previewView.getHeight());
+                            Log.d(TAG, "  [CameraX-post] container.isShown=" + container.isShown());
+                        });
+
+                        JSONObject result = new JSONObject();
+                        result.put("opened", true);
+                        callbackContext.success(result);
+
+                    } catch (Exception e) {
+                        Log.e(TAG, "  [CameraX] EXCEPTION: " + e.getClass().getName() + ": " + e.getMessage());
+                        Log.e(TAG, "  [CameraX] Stack:", e);
+                        callbackContext.error("Error iniciando camara: " + e.getMessage());
+                    }
+                }, ContextCompat.getMainExecutor(activity));
+
+            } catch (Exception e) {
+                Log.e(TAG, "  [UI] TOP-LEVEL EXCEPTION: " + e.getMessage());
+                Log.e(TAG, "  [UI] Stack:", e);
+                callbackContext.error("Error creando preview: " + e.getMessage());
+            }
         });
     }
 
