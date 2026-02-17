@@ -216,8 +216,9 @@ public class SLMQR extends CordovaPlugin {
                 ));
                 container.setBackgroundColor(Color.BLACK);
 
-                // Camera preview
+                // Camera preview (COMPATIBLE = TextureView, works in overlay windows)
                 final PreviewView previewView = new PreviewView(activity);
+                previewView.setImplementationMode(PreviewView.ImplementationMode.COMPATIBLE);
                 previewView.setLayoutParams(new FrameLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
@@ -500,6 +501,7 @@ public class SLMQR extends CordovaPlugin {
             container.setBackgroundColor(Color.BLACK);
 
             PreviewView previewView = new PreviewView(activity);
+            previewView.setImplementationMode(PreviewView.ImplementationMode.COMPATIBLE);
             previewView.setLayoutParams(new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
