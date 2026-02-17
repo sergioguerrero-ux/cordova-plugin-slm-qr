@@ -20,6 +20,7 @@ import android.util.Size;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.graphics.PixelFormat;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
@@ -496,10 +497,6 @@ public class SLMQR extends CordovaPlugin {
         activity.runOnUiThread(() -> {
             Log.d(TAG, "  [UI thread] Creating embedded preview container...");
             FrameLayout container = new FrameLayout(activity);
-            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(wPx, hPx);
-            params.leftMargin = xPx;
-            params.topMargin = yPx;
-            container.setLayoutParams(params);
             container.setBackgroundColor(Color.BLACK);
 
             PreviewView previewView = new PreviewView(activity);
@@ -509,11 +506,24 @@ public class SLMQR extends CordovaPlugin {
             ));
             container.addView(previewView);
 
-            ViewGroup decorView = (ViewGroup) activity.getWindow().getDecorView();
-            Log.d(TAG, "  [UI thread] Adding to DecorView...");
-            decorView.addView(container);
+            // Use WindowManager for guaranteed z-ordering above InAppBrowser
+            Log.d(TAG, "  [UI thread] Adding via WindowManager (above InAppBrowser)...");
+            WindowManager.LayoutParams wlp = new WindowManager.LayoutParams(
+                    wPx, hPx,
+                    WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                    PixelFormat.TRANSLUCENT
+            );
+            wlp.gravity = Gravity.TOP | Gravity.LEFT;
+            wlp.x = xPx;
+            wlp.y = yPx;
+            wlp.token = activity.getWindow().getDecorView().getWindowToken();
+
+            WindowManager wm = (WindowManager) activity.getSystemService(Activity.WINDOW_SERVICE);
+            wm.addView(container, wlp);
             embeddedContainer = container;
-            Log.d(TAG, "  [UI thread] Container added to DecorView");
+            Log.d(TAG, "  [UI thread] Container added via WindowManager OK");
 
             ListenableFuture<ProcessCameraProvider> future = ProcessCameraProvider.getInstance(activity);
             Log.d(TAG, "  [UI thread] CameraProvider future obtained, adding listener...");
@@ -630,12 +640,23 @@ public class SLMQR extends CordovaPlugin {
     }
 
     private void closeEmbeddedPreview() {
+        Log.d(TAG, "closeEmbeddedPreview()");
         if (embeddedCameraProvider != null) {
             embeddedCameraProvider.unbindAll();
             embeddedCameraProvider = null;
         }
-        if (embeddedContainer != null && embeddedContainer.getParent() != null) {
-            ((ViewGroup) embeddedContainer.getParent()).removeView(embeddedContainer);
+        if (embeddedContainer != null) {
+            try {
+                WindowManager wm = (WindowManager) cordova.getActivity().getSystemService(Activity.WINDOW_SERVICE);
+                wm.removeView(embeddedContainer);
+                Log.d(TAG, "  Removed via WindowManager");
+            } catch (Exception e) {
+                Log.e(TAG, "  WindowManager remove failed: " + e.getMessage());
+                // Fallback
+                if (embeddedContainer.getParent() != null) {
+                    ((ViewGroup) embeddedContainer.getParent()).removeView(embeddedContainer);
+                }
+            }
             embeddedContainer = null;
         }
         lastDetectedValue = null;

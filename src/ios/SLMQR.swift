@@ -8,12 +8,11 @@ import UIKit
     private var scanMode: String = "qr" // "qr" or "barcode"
 
     // Embedded preview
-    private var embeddedPreviewView: UIView?
+    private var embeddedWindow: UIWindow?
     private var embeddedSession: AVCaptureSession?
     private var detectedCallbackId: String?
     private var lastDetectedValue: String?
     private var lastDetectedTime: TimeInterval = 0
-    private let embeddedViewTag = 98765
 
     // MARK: - scanQR
 
@@ -133,21 +132,6 @@ import UIKit
         NSLog("[SLMQR]   x=%.0f y=%.0f w=%.0f h=%.0f camera=%@", x, y, width, height, cameraPosition)
 
         DispatchQueue.main.async {
-            NSLog("[SLMQR]   [main thread] Looking for key window...")
-            guard let window = UIApplication.shared.windows.first(where: { $0.isKeyWindow }) else {
-                NSLog("[SLMQR]   [main thread] ERROR: No key window found!")
-                let result = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "No se encontro la ventana principal")
-                self.commandDelegate.send(result, callbackId: command.callbackId)
-                return
-            }
-            NSLog("[SLMQR]   [main thread] Key window found: %@", window)
-
-            let container = UIView(frame: CGRect(x: x, y: y, width: width, height: height))
-            container.clipsToBounds = true
-            container.backgroundColor = .black
-            container.tag = self.embeddedViewTag
-            NSLog("[SLMQR]   [main thread] Container created: frame=%@", NSCoder.string(for: container.frame))
-
             let session = AVCaptureSession()
             session.sessionPreset = .high
 
@@ -155,7 +139,7 @@ import UIKit
             NSLog("[SLMQR]   [main thread] Looking for camera at position: %@", cameraPosition)
             guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position),
                   let input = try? AVCaptureDeviceInput(device: device) else {
-                NSLog("[SLMQR]   [main thread] ERROR: Camera not available at position %@!", cameraPosition)
+                NSLog("[SLMQR]   [main thread] ERROR: Camera not available!")
                 let result = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Camara no disponible")
                 self.commandDelegate.send(result, callbackId: command.callbackId)
                 return
@@ -172,16 +156,27 @@ import UIKit
                                                .code128, .pdf417, .aztec, .itf14, .dataMatrix, .interleaved2of5]
             }
 
+            // Use dedicated UIWindow above InAppBrowser
+            NSLog("[SLMQR]   [main thread] Creating UIWindow overlay (above InAppBrowser)...")
+            let cameraWindow = UIWindow(frame: CGRect(x: x, y: y, width: width, height: height))
+            cameraWindow.windowLevel = .alert + 100
+            cameraWindow.clipsToBounds = true
+            cameraWindow.backgroundColor = .black
+            cameraWindow.isUserInteractionEnabled = false
+
             let previewLayer = AVCaptureVideoPreviewLayer(session: session)
             previewLayer.videoGravity = .resizeAspectFill
-            previewLayer.frame = container.bounds
-            container.layer.addSublayer(previewLayer)
+            previewLayer.frame = CGRect(x: 0, y: 0, width: width, height: height)
 
-            NSLog("[SLMQR]   [main thread] Adding container to key window...")
-            window.addSubview(container)
-            self.embeddedPreviewView = container
+            let rootVC = UIViewController()
+            rootVC.view.frame = CGRect(x: 0, y: 0, width: width, height: height)
+            rootVC.view.layer.addSublayer(previewLayer)
+            cameraWindow.rootViewController = rootVC
+            cameraWindow.isHidden = false
+
+            self.embeddedWindow = cameraWindow
             self.embeddedSession = session
-            NSLog("[SLMQR]   [main thread] Container added. Window subviews count: %d", window.subviews.count)
+            NSLog("[SLMQR]   [main thread] UIWindow created and visible, windowLevel=%.0f", cameraWindow.windowLevel.rawValue)
 
             NSLog("[SLMQR]   [main thread] Starting capture session...")
             DispatchQueue.global(qos: .userInitiated).async {
@@ -212,10 +207,11 @@ import UIKit
     }
 
     private func closeEmbeddedPreview() {
+        NSLog("[SLMQR] closeEmbeddedPreview()")
         embeddedSession?.stopRunning()
         embeddedSession = nil
-        embeddedPreviewView?.removeFromSuperview()
-        embeddedPreviewView = nil
+        embeddedWindow?.isHidden = true
+        embeddedWindow = nil
         detectedCallbackId = nil
         lastDetectedValue = nil
     }
