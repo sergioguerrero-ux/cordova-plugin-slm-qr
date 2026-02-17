@@ -57,6 +57,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.lang.reflect.Field;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -477,6 +478,39 @@ public class SLMQR extends CordovaPlugin {
     // Embedded QR Preview
     // ============================================
 
+    private android.app.Dialog findInAppBrowserDialog() {
+        try {
+            // Try common InAppBrowser service names
+            String[] serviceNames = {"InAppBrowser", "inappbrowser", "cordova-plugin-inappbrowser"};
+            for (String name : serviceNames) {
+                CordovaPlugin plugin = webView.getPluginManager().getPlugin(name);
+                if (plugin != null) {
+                    Log.d(TAG, "  [findDialog] Found plugin '" + name + "': " + plugin.getClass().getName());
+                    // Search ALL fields (including inherited) for a Dialog instance
+                    Class<?> cls = plugin.getClass();
+                    while (cls != null && cls != Object.class) {
+                        for (Field f : cls.getDeclaredFields()) {
+                            try {
+                                f.setAccessible(true);
+                                Object val = f.get(plugin);
+                                if (val instanceof android.app.Dialog) {
+                                    Log.d(TAG, "  [findDialog] Found Dialog in field '" + f.getName() + "'");
+                                    return (android.app.Dialog) val;
+                                }
+                            } catch (Exception ignored) {}
+                        }
+                        cls = cls.getSuperclass();
+                    }
+                    Log.w(TAG, "  [findDialog] Plugin found but no Dialog field");
+                }
+            }
+            Log.w(TAG, "  [findDialog] No InAppBrowser plugin found");
+        } catch (Exception e) {
+            Log.e(TAG, "  [findDialog] Exception: " + e.getMessage());
+        }
+        return null;
+    }
+
     private void openQRPreview(JSONObject options, CallbackContext callbackContext) {
         Log.d(TAG, "======== openQRPreview() ========");
         closeEmbeddedPreview();
@@ -495,29 +529,27 @@ public class SLMQR extends CordovaPlugin {
         final boolean useFrontCamera = "front".equals(options.optString("camera", "back"));
 
         Log.d(TAG, "  screen=" + screenW + "x" + screenH + " density=" + density);
-        Log.d(TAG, "  input dp: x=" + options.optDouble("x", 0) + " y=" + options.optDouble("y", 0)
-                + " w=" + options.optDouble("width", 0) + " h=" + options.optDouble("height", 0));
         Log.d(TAG, "  computed px: x=" + xPx + " y=" + yPx + " w=" + wPx + " h=" + hPx);
-        Log.d(TAG, "  useFrontCamera=" + useFrontCamera);
+
+        // Diagnostics object — sent to JS so user can see in console
+        final JSONObject diag = new JSONObject();
+        try {
+            diag.put("screenW", screenW);
+            diag.put("screenH", screenH);
+            diag.put("density", density);
+            diag.put("xPx", xPx);
+            diag.put("yPx", yPx);
+            diag.put("wPx", wPx);
+            diag.put("hPx", hPx);
+        } catch (JSONException ignore) {}
 
         activity.runOnUiThread(() -> {
             try {
-                Log.d(TAG, "  [UI] Creating container...");
+                // Create container
                 FrameLayout container = new FrameLayout(activity);
-                container.setBackgroundColor(Color.RED); // RED para diagnostico visual
+                container.setBackgroundColor(Color.BLACK);
 
-                // Debug label para verificar que el window es visible
-                TextView debugLabel = new TextView(activity);
-                debugLabel.setText("SLMQR CAMERA");
-                debugLabel.setTextColor(Color.WHITE);
-                debugLabel.setTextSize(20);
-                debugLabel.setBackgroundColor(Color.RED);
-                FrameLayout.LayoutParams debugParams = new FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                debugParams.gravity = Gravity.CENTER;
-                debugLabel.setLayoutParams(debugParams);
-                container.addView(debugLabel);
-
+                // Camera preview (COMPATIBLE = TextureView)
                 PreviewView previewView = new PreviewView(activity);
                 previewView.setImplementationMode(PreviewView.ImplementationMode.COMPATIBLE);
                 previewView.setLayoutParams(new FrameLayout.LayoutParams(
@@ -525,82 +557,74 @@ public class SLMQR extends CordovaPlugin {
                         ViewGroup.LayoutParams.MATCH_PARENT
                 ));
                 container.addView(previewView);
-                Log.d(TAG, "  [UI] PreviewView mode=" + previewView.getImplementationMode());
 
-                // ---- Intento 1: WindowManager TYPE_APPLICATION_PANEL ----
-                Log.d(TAG, "  [UI] Trying WindowManager TYPE_APPLICATION_PANEL...");
-                WindowManager wm = (WindowManager) activity.getSystemService(Activity.WINDOW_SERVICE);
-                android.view.View decorView = activity.getWindow().getDecorView();
-                android.os.IBinder windowToken = decorView.getWindowToken();
-                Log.d(TAG, "  [UI] decorView=" + decorView);
-                Log.d(TAG, "  [UI] windowToken=" + windowToken);
-                Log.d(TAG, "  [UI] decorView.isShown=" + decorView.isShown());
+                // === PLACEMENT STRATEGY ===
+                // The InAppBrowser opens as a Dialog (separate window).
+                // Views added to the Activity's DecorView render BEHIND the Dialog.
+                // We must add the camera to the Dialog's own DecorView to be visible.
+                boolean placed = false;
 
-                if (windowToken == null) {
-                    Log.w(TAG, "  [UI] windowToken is NULL! Falling back to DecorView.addView...");
-                    // Fallback sin WindowManager
+                // Strategy 1: InAppBrowser Dialog's DecorView
+                android.app.Dialog iabDialog = findInAppBrowserDialog();
+                try { diag.put("iabDialogFound", iabDialog != null); } catch (JSONException ignore) {}
+
+                if (iabDialog != null && iabDialog.isShowing()) {
+                    try {
+                        android.view.Window dialogWindow = iabDialog.getWindow();
+                        ViewGroup dialogDecor = (ViewGroup) dialogWindow.getDecorView();
+                        FrameLayout.LayoutParams fp = new FrameLayout.LayoutParams(wPx, hPx);
+                        fp.gravity = Gravity.TOP | Gravity.LEFT;
+                        fp.leftMargin = xPx;
+                        fp.topMargin = yPx;
+                        dialogDecor.addView(container, fp);
+                        container.bringToFront();
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                            container.setTranslationZ(Float.MAX_VALUE);
+                        }
+                        placed = true;
+                        Log.d(TAG, "  [UI] Added to InAppBrowser Dialog DecorView OK");
+                        try {
+                            diag.put("placement", "InAppBrowser Dialog DecorView");
+                            diag.put("dialogDecorChildren", dialogDecor.getChildCount());
+                        } catch (JSONException ignore) {}
+                    } catch (Exception e) {
+                        Log.e(TAG, "  [UI] Dialog placement failed: " + e.getMessage());
+                        try { diag.put("dialogPlacementError", e.getMessage()); } catch (JSONException ignore) {}
+                    }
+                }
+
+                // Strategy 2: Activity DecorView with max Z (fallback)
+                if (!placed) {
+                    Log.d(TAG, "  [UI] Fallback: adding to Activity DecorView");
+                    ViewGroup decorView = (ViewGroup) activity.getWindow().getDecorView();
                     FrameLayout.LayoutParams fp = new FrameLayout.LayoutParams(wPx, hPx);
                     fp.gravity = Gravity.TOP | Gravity.LEFT;
                     fp.leftMargin = xPx;
                     fp.topMargin = yPx;
-                    ((ViewGroup) decorView).addView(container, fp);
+                    decorView.addView(container, fp);
                     container.bringToFront();
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                        container.setTranslationZ(10000f);
+                        container.setTranslationZ(Float.MAX_VALUE);
                     }
-                    Log.d(TAG, "  [UI] Fallback: added to DecorView with Z=10000");
-                } else {
-                    WindowManager.LayoutParams wlp = new WindowManager.LayoutParams(
-                            wPx, hPx,
-                            WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
-                            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                            PixelFormat.TRANSLUCENT
-                    );
-                    wlp.gravity = Gravity.TOP | Gravity.LEFT;
-                    wlp.x = xPx;
-                    wlp.y = yPx;
-                    wlp.token = windowToken;
-                    wm.addView(container, wlp);
-                    Log.d(TAG, "  [UI] WindowManager.addView OK type=APPLICATION_PANEL");
+                    try { diag.put("placement", "Activity DecorView (fallback)"); } catch (JSONException ignore) {}
                 }
 
                 embeddedContainer = container;
 
-                // Log post-layout state
-                container.post(() -> {
-                    Log.d(TAG, "  [UI-post] container.isShown=" + container.isShown());
-                    Log.d(TAG, "  [UI-post] container.getVisibility=" + container.getVisibility());
-                    Log.d(TAG, "  [UI-post] container.getWidth=" + container.getWidth() + " getHeight=" + container.getHeight());
-                    Log.d(TAG, "  [UI-post] container.getX=" + container.getX() + " getY=" + container.getY());
-                    Log.d(TAG, "  [UI-post] container parent=" + container.getParent());
-                    Log.d(TAG, "  [UI-post] previewView.isShown=" + previewView.isShown());
-                    Log.d(TAG, "  [UI-post] previewView.getWidth=" + previewView.getWidth() + " getHeight=" + previewView.getHeight());
-                    int[] loc = new int[2];
-                    container.getLocationOnScreen(loc);
-                    Log.d(TAG, "  [UI-post] container locationOnScreen=" + loc[0] + "," + loc[1]);
-                });
-
                 // Setup CameraX
-                Log.d(TAG, "  [UI] Setting up CameraX...");
                 ListenableFuture<ProcessCameraProvider> future = ProcessCameraProvider.getInstance(activity);
                 future.addListener(() -> {
                     try {
-                        Log.d(TAG, "  [CameraX] Getting provider...");
                         ProcessCameraProvider cameraProvider = future.get();
                         embeddedCameraProvider = cameraProvider;
                         cameraProvider.unbindAll();
-                        Log.d(TAG, "  [CameraX] Provider obtained, unbound all");
 
                         Preview preview = new Preview.Builder().build();
                         preview.setSurfaceProvider(previewView.getSurfaceProvider());
-                        Log.d(TAG, "  [CameraX] Preview built, surfaceProvider set");
 
                         CameraSelector selector = useFrontCamera
                                 ? CameraSelector.DEFAULT_FRONT_CAMERA
                                 : CameraSelector.DEFAULT_BACK_CAMERA;
-                        Log.d(TAG, "  [CameraX] CameraSelector: " + (useFrontCamera ? "FRONT" : "BACK"));
 
                         BarcodeScannerOptions scannerOpts = new BarcodeScannerOptions.Builder()
                                 .setBarcodeFormats(
@@ -668,34 +692,45 @@ public class SLMQR extends CordovaPlugin {
                                     .addOnFailureListener(e -> imageProxy.close());
                         });
 
-                        Log.d(TAG, "  [CameraX] Binding to lifecycle...");
-                        Log.d(TAG, "  [CameraX] activity isLifecycleOwner=" + (activity instanceof LifecycleOwner));
-                        Camera camera = cameraProvider.bindToLifecycle((LifecycleOwner) activity, selector, preview, imageAnalysis);
+                        Camera camera = cameraProvider.bindToLifecycle(
+                                (LifecycleOwner) activity, selector, preview, imageAnalysis);
                         Log.d(TAG, "  [CameraX] BOUND! camera=" + camera);
-                        Log.d(TAG, "  [CameraX] hasFlashUnit=" + camera.getCameraInfo().hasFlashUnit());
+                        try { diag.put("cameraBound", true); } catch (JSONException ignore) {}
 
-                        // Check PreviewView state after bind
-                        previewView.post(() -> {
-                            Log.d(TAG, "  [CameraX-post] previewView.isShown=" + previewView.isShown());
-                            Log.d(TAG, "  [CameraX-post] previewView.getWidth=" + previewView.getWidth());
-                            Log.d(TAG, "  [CameraX-post] previewView.getHeight=" + previewView.getHeight());
-                            Log.d(TAG, "  [CameraX-post] container.isShown=" + container.isShown());
+                        // Collect post-layout diagnostics then send result
+                        container.post(() -> {
+                            try {
+                                diag.put("containerShown", container.isShown());
+                                diag.put("containerW", container.getWidth());
+                                diag.put("containerH", container.getHeight());
+                                diag.put("previewShown", previewView.isShown());
+                                diag.put("previewW", previewView.getWidth());
+                                diag.put("previewH", previewView.getHeight());
+                                int[] loc = new int[2];
+                                container.getLocationOnScreen(loc);
+                                diag.put("containerScreenX", loc[0]);
+                                diag.put("containerScreenY", loc[1]);
+                                diag.put("parentClass", container.getParent() != null
+                                        ? container.getParent().getClass().getSimpleName() : "null");
+                            } catch (JSONException ignore) {}
+
+                            JSONObject result = new JSONObject();
+                            try {
+                                result.put("opened", true);
+                                result.put("_diag", diag);
+                            } catch (JSONException ignore) {}
+                            callbackContext.success(result);
                         });
 
-                        JSONObject result = new JSONObject();
-                        result.put("opened", true);
-                        callbackContext.success(result);
-
                     } catch (Exception e) {
-                        Log.e(TAG, "  [CameraX] EXCEPTION: " + e.getClass().getName() + ": " + e.getMessage());
-                        Log.e(TAG, "  [CameraX] Stack:", e);
+                        Log.e(TAG, "  [CameraX] EXCEPTION: " + e.getMessage(), e);
+                        try { diag.put("cameraError", e.getMessage()); } catch (JSONException ignore) {}
                         callbackContext.error("Error iniciando camara: " + e.getMessage());
                     }
                 }, ContextCompat.getMainExecutor(activity));
 
             } catch (Exception e) {
-                Log.e(TAG, "  [UI] TOP-LEVEL EXCEPTION: " + e.getMessage());
-                Log.e(TAG, "  [UI] Stack:", e);
+                Log.e(TAG, "  [UI] EXCEPTION: " + e.getMessage(), e);
                 callbackContext.error("Error creando preview: " + e.getMessage());
             }
         });
@@ -721,16 +756,9 @@ public class SLMQR extends CordovaPlugin {
             embeddedCameraProvider = null;
         }
         if (embeddedContainer != null) {
-            try {
-                WindowManager wm = (WindowManager) cordova.getActivity().getSystemService(Activity.WINDOW_SERVICE);
-                wm.removeView(embeddedContainer);
-                Log.d(TAG, "  Removed via WindowManager");
-            } catch (Exception e) {
-                Log.e(TAG, "  WindowManager remove failed: " + e.getMessage());
-                // Fallback
-                if (embeddedContainer.getParent() != null) {
-                    ((ViewGroup) embeddedContainer.getParent()).removeView(embeddedContainer);
-                }
+            if (embeddedContainer.getParent() != null) {
+                ((ViewGroup) embeddedContainer.getParent()).removeView(embeddedContainer);
+                Log.d(TAG, "  Removed from parent: " + embeddedContainer.getParent());
             }
             embeddedContainer = null;
         }
