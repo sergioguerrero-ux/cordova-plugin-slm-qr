@@ -82,40 +82,53 @@ public class SLMQR extends CordovaPlugin {
 
     @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) throws JSONException {
+        Log.d(TAG, "======== execute() ========");
+        Log.d(TAG, "  action: " + action);
+        Log.d(TAG, "  args: " + args.toString());
+
         switch (action) {
             case "scanQR":
+                Log.d(TAG, "  -> scanQR mode");
                 pendingScanMode = "qr";
                 pendingScanOptions = args.optJSONObject(0);
                 scanCallback = callbackContext;
                 startScan();
                 return true;
             case "scanBarcode":
+                Log.d(TAG, "  -> scanBarcode mode");
                 pendingScanMode = "barcode";
                 pendingScanOptions = args.optJSONObject(0);
                 scanCallback = callbackContext;
                 startScan();
                 return true;
             case "generateQR":
+                Log.d(TAG, "  -> generateQR");
                 String data = args.optString(0, "");
                 JSONObject options = args.optJSONObject(1);
                 generateQR(data, options != null ? options : new JSONObject(), callbackContext);
                 return true;
             case "openQRPreview":
+                Log.d(TAG, "  -> openQRPreview");
                 pendingPreviewOptions = args.optJSONObject(0);
                 pendingPreviewCallback = callbackContext;
                 if (!hasCameraPermission()) {
+                    Log.d(TAG, "  No camera permission, requesting...");
                     cordova.requestPermission(this, CAMERA_PERMISSION_PREVIEW, Manifest.permission.CAMERA);
                 } else {
+                    Log.d(TAG, "  Camera permission OK, opening preview...");
                     openQRPreview(pendingPreviewOptions, callbackContext);
                 }
                 return true;
             case "closeQRPreview":
+                Log.d(TAG, "  -> closeQRPreview");
                 closeQRPreview(callbackContext);
                 return true;
             case "onQRDetected":
+                Log.d(TAG, "  -> onQRDetected (registering callback)");
                 detectedCallback = callbackContext;
                 return true;
             default:
+                Log.w(TAG, "  -> UNKNOWN action: " + action);
                 return false;
         }
     }
@@ -125,32 +138,42 @@ public class SLMQR extends CordovaPlugin {
     // ============================================
 
     private void startScan() {
+        Log.d(TAG, "startScan() called");
         if (!hasCameraPermission()) {
+            Log.d(TAG, "  No camera permission, requesting...");
             cordova.requestPermission(this, CAMERA_PERMISSION_REQUEST, Manifest.permission.CAMERA);
             return;
         }
+        Log.d(TAG, "  Camera permission OK, opening scanner...");
         openScannerActivity();
     }
 
     private boolean hasCameraPermission() {
-        return ContextCompat.checkSelfPermission(cordova.getActivity(), Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+        boolean has = ContextCompat.checkSelfPermission(cordova.getActivity(), Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+        Log.d(TAG, "hasCameraPermission() = " + has);
+        return has;
     }
 
     @Override
     public void onRequestPermissionResult(int requestCode, String[] permissions, int[] grantResults) throws JSONException {
         boolean granted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+        Log.d(TAG, "onRequestPermissionResult() requestCode=" + requestCode + " granted=" + granted);
 
         if (requestCode == CAMERA_PERMISSION_REQUEST) {
             if (granted) {
+                Log.d(TAG, "  Camera scan permission granted, opening scanner");
                 openScannerActivity();
             } else if (scanCallback != null) {
+                Log.w(TAG, "  Camera scan permission DENIED");
                 scanCallback.error("Permiso de camara denegado");
                 scanCallback = null;
             }
         } else if (requestCode == CAMERA_PERMISSION_PREVIEW) {
             if (granted && pendingPreviewCallback != null) {
+                Log.d(TAG, "  Camera preview permission granted, opening preview");
                 openQRPreview(pendingPreviewOptions, pendingPreviewCallback);
             } else if (pendingPreviewCallback != null) {
+                Log.w(TAG, "  Camera preview permission DENIED");
                 pendingPreviewCallback.error("Permiso de camara denegado");
                 pendingPreviewCallback = null;
             }
@@ -158,7 +181,12 @@ public class SLMQR extends CordovaPlugin {
     }
 
     private void openScannerActivity() {
+        Log.d(TAG, "======== openScannerActivity() ========");
         final Activity activity = cordova.getActivity();
+        Log.d(TAG, "  activity: " + activity);
+        Log.d(TAG, "  activity class: " + activity.getClass().getName());
+        Log.d(TAG, "  activity isLifecycleOwner: " + (activity instanceof LifecycleOwner));
+
         final JSONObject options = pendingScanOptions != null ? pendingScanOptions : new JSONObject();
         final String mode = pendingScanMode != null ? pendingScanMode : "qr";
 
@@ -168,9 +196,17 @@ public class SLMQR extends CordovaPlugin {
         final boolean useFrontCamera = "front".equals(options.optString("camera", "back"));
         final String title = options.optString("title", mode.equals("qr") ? "Escanea el codigo QR" : "Escanea el codigo de barras");
 
+        Log.d(TAG, "  mode: " + mode);
+        Log.d(TAG, "  template: " + template);
+        Log.d(TAG, "  flashlight: " + flashlight);
+        Log.d(TAG, "  vibrate: " + vibrate);
+        Log.d(TAG, "  useFrontCamera: " + useFrontCamera);
+        Log.d(TAG, "  title: " + title);
+
         activity.runOnUiThread(new Runnable() {
             @Override
             public void run() {
+                Log.d(TAG, "  [UI thread] Creating fullscreen scanner...");
                 // Create fullscreen FrameLayout
                 final FrameLayout container = new FrameLayout(activity);
                 container.setLayoutParams(new FrameLayout.LayoutParams(
@@ -227,23 +263,34 @@ public class SLMQR extends CordovaPlugin {
                 }
 
                 // Add to DecorView (on top of InAppBrowser)
+                Log.d(TAG, "  [UI thread] Adding container to DecorView...");
                 ViewGroup decorView = (ViewGroup) activity.getWindow().getDecorView();
+                Log.d(TAG, "  [UI thread] DecorView: " + decorView);
+                Log.d(TAG, "  [UI thread] DecorView childCount: " + decorView.getChildCount());
                 decorView.addView(container, new FrameLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
                 ));
+                Log.d(TAG, "  [UI thread] Container added! DecorView childCount now: " + decorView.getChildCount());
+                Log.d(TAG, "  [UI thread] Container visibility: " + container.getVisibility());
+                Log.d(TAG, "  [UI thread] Container dimensions: " + container.getWidth() + "x" + container.getHeight());
 
                 // Setup CameraX
+                Log.d(TAG, "  [UI thread] Setting up CameraX...");
                 final boolean[] hasDetected = {false};
                 ListenableFuture<ProcessCameraProvider> cameraProviderFuture =
                         ProcessCameraProvider.getInstance(activity);
 
+                Log.d(TAG, "  [UI thread] CameraProvider future obtained, adding listener...");
                 cameraProviderFuture.addListener(() -> {
                     try {
+                        Log.d(TAG, "  [CameraX listener] Getting camera provider...");
                         ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
+                        Log.d(TAG, "  [CameraX listener] Camera provider obtained: " + cameraProvider);
 
                         Preview preview = new Preview.Builder().build();
                         preview.setSurfaceProvider(previewView.getSurfaceProvider());
+                        Log.d(TAG, "  [CameraX listener] Preview built, surface provider set");
 
                         CameraSelector cameraSelector = useFrontCamera
                                 ? CameraSelector.DEFAULT_FRONT_CAMERA
@@ -270,11 +317,13 @@ public class SLMQR extends CordovaPlugin {
                         }
 
                         BarcodeScanner scanner = BarcodeScanning.getClient(scannerBuilder.build());
+                        Log.d(TAG, "  [CameraX listener] BarcodeScanner created");
 
                         ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
                                 .setTargetResolution(new Size(1280, 720))
                                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                                 .build();
+                        Log.d(TAG, "  [CameraX listener] ImageAnalysis built");
 
                         imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(activity), imageProxy -> {
                             if (hasDetected[0]) {
@@ -342,8 +391,10 @@ public class SLMQR extends CordovaPlugin {
                                     });
                         });
 
+                        Log.d(TAG, "  [CameraX listener] Binding to lifecycle...");
                         Camera camera = cameraProvider.bindToLifecycle(
                                 (LifecycleOwner) activity, cameraSelector, preview, imageAnalysis);
+                        Log.d(TAG, "  [CameraX listener] Camera bound successfully! camera=" + camera);
 
                         // Flash toggle
                         if (flashBtn != null && camera.getCameraInfo().hasFlashUnit()) {
@@ -365,8 +416,9 @@ public class SLMQR extends CordovaPlugin {
                             }
                         });
 
-                    } catch (ExecutionException | InterruptedException e) {
-                        Log.e(TAG, "Camera init error: " + e.getMessage());
+                    } catch (Exception e) {
+                        Log.e(TAG, "  [CameraX listener] EXCEPTION: " + e.getClass().getName() + ": " + e.getMessage());
+                        Log.e(TAG, "  [CameraX listener] Stack trace:", e);
                         if (scanCallback != null) {
                             scanCallback.error("Error al iniciar camara: " + e.getMessage());
                             scanCallback = null;
@@ -424,6 +476,7 @@ public class SLMQR extends CordovaPlugin {
     // ============================================
 
     private void openQRPreview(JSONObject options, CallbackContext callbackContext) {
+        Log.d(TAG, "======== openQRPreview() ========");
         closeEmbeddedPreview();
 
         if (options == null) options = new JSONObject();
@@ -437,7 +490,11 @@ public class SLMQR extends CordovaPlugin {
         final int hPx = Math.round((float) options.optDouble("height", 300) * density);
         final boolean useFrontCamera = "front".equals(options.optString("camera", "back"));
 
+        Log.d(TAG, "  density=" + density + " x=" + xPx + " y=" + yPx + " w=" + wPx + " h=" + hPx);
+        Log.d(TAG, "  useFrontCamera=" + useFrontCamera);
+
         activity.runOnUiThread(() -> {
+            Log.d(TAG, "  [UI thread] Creating embedded preview container...");
             FrameLayout container = new FrameLayout(activity);
             FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(wPx, hPx);
             params.leftMargin = xPx;
@@ -453,17 +510,23 @@ public class SLMQR extends CordovaPlugin {
             container.addView(previewView);
 
             ViewGroup decorView = (ViewGroup) activity.getWindow().getDecorView();
+            Log.d(TAG, "  [UI thread] Adding to DecorView...");
             decorView.addView(container);
             embeddedContainer = container;
+            Log.d(TAG, "  [UI thread] Container added to DecorView");
 
             ListenableFuture<ProcessCameraProvider> future = ProcessCameraProvider.getInstance(activity);
+            Log.d(TAG, "  [UI thread] CameraProvider future obtained, adding listener...");
             future.addListener(() -> {
                 try {
+                    Log.d(TAG, "  [Preview CameraX] Getting camera provider...");
                     ProcessCameraProvider cameraProvider = future.get();
                     embeddedCameraProvider = cameraProvider;
+                    Log.d(TAG, "  [Preview CameraX] Camera provider obtained");
 
                     Preview preview = new Preview.Builder().build();
                     preview.setSurfaceProvider(previewView.getSurfaceProvider());
+                    Log.d(TAG, "  [Preview CameraX] Preview built, surface provider set");
 
                     CameraSelector selector = useFrontCamera
                             ? CameraSelector.DEFAULT_FRONT_CAMERA
@@ -536,14 +599,17 @@ public class SLMQR extends CordovaPlugin {
                                 .addOnFailureListener(e -> imageProxy.close());
                     });
 
+                    Log.d(TAG, "  [Preview CameraX] Binding to lifecycle...");
                     cameraProvider.bindToLifecycle((LifecycleOwner) activity, selector, preview, imageAnalysis);
+                    Log.d(TAG, "  [Preview CameraX] Camera bound successfully!");
 
                     JSONObject result = new JSONObject();
                     result.put("opened", true);
                     callbackContext.success(result);
 
                 } catch (Exception e) {
-                    Log.e(TAG, "Camera init error: " + e.getMessage());
+                    Log.e(TAG, "  [Preview CameraX] EXCEPTION: " + e.getClass().getName() + ": " + e.getMessage());
+                    Log.e(TAG, "  [Preview CameraX] Stack trace:", e);
                     callbackContext.error("Error iniciando camara: " + e.getMessage());
                 }
             }, ContextCompat.getMainExecutor(activity));

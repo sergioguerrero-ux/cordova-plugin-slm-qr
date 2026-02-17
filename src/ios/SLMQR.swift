@@ -19,9 +19,12 @@ import UIKit
 
     @objc(scanQR:)
     func scanQR(command: CDVInvokedUrlCommand) {
+        NSLog("[SLMQR] ======== scanQR() ========")
+        NSLog("[SLMQR]   callbackId: %@", command.callbackId)
         scanCallbackId = command.callbackId
         scanMode = "qr"
         let options = command.argument(at: 0) as? [String: Any] ?? [:]
+        NSLog("[SLMQR]   options: %@", options)
         openScanner(options: options)
     }
 
@@ -29,9 +32,11 @@ import UIKit
 
     @objc(scanBarcode:)
     func scanBarcode(command: CDVInvokedUrlCommand) {
+        NSLog("[SLMQR] ======== scanBarcode() ========")
         scanCallbackId = command.callbackId
         scanMode = "barcode"
         let options = command.argument(at: 0) as? [String: Any] ?? [:]
+        NSLog("[SLMQR]   options: %@", options)
         openScanner(options: options)
     }
 
@@ -115,6 +120,7 @@ import UIKit
 
     @objc(openQRPreview:)
     func openQRPreview(command: CDVInvokedUrlCommand) {
+        NSLog("[SLMQR] ======== openQRPreview() ========")
         closeEmbeddedPreview()
 
         let options = command.argument(at: 0) as? [String: Any] ?? [:]
@@ -124,28 +130,37 @@ import UIKit
         let height = options["height"] as? CGFloat ?? 300
         let cameraPosition = options["camera"] as? String ?? "back"
 
+        NSLog("[SLMQR]   x=%.0f y=%.0f w=%.0f h=%.0f camera=%@", x, y, width, height, cameraPosition)
+
         DispatchQueue.main.async {
+            NSLog("[SLMQR]   [main thread] Looking for key window...")
             guard let window = UIApplication.shared.windows.first(where: { $0.isKeyWindow }) else {
+                NSLog("[SLMQR]   [main thread] ERROR: No key window found!")
                 let result = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "No se encontro la ventana principal")
                 self.commandDelegate.send(result, callbackId: command.callbackId)
                 return
             }
+            NSLog("[SLMQR]   [main thread] Key window found: %@", window)
 
             let container = UIView(frame: CGRect(x: x, y: y, width: width, height: height))
             container.clipsToBounds = true
             container.backgroundColor = .black
             container.tag = self.embeddedViewTag
+            NSLog("[SLMQR]   [main thread] Container created: frame=%@", NSCoder.string(for: container.frame))
 
             let session = AVCaptureSession()
             session.sessionPreset = .high
 
             let position: AVCaptureDevice.Position = cameraPosition == "front" ? .front : .back
+            NSLog("[SLMQR]   [main thread] Looking for camera at position: %@", cameraPosition)
             guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position),
                   let input = try? AVCaptureDeviceInput(device: device) else {
+                NSLog("[SLMQR]   [main thread] ERROR: Camera not available at position %@!", cameraPosition)
                 let result = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Camara no disponible")
                 self.commandDelegate.send(result, callbackId: command.callbackId)
                 return
             }
+            NSLog("[SLMQR]   [main thread] Camera device found: %@", device.localizedName)
 
             if session.canAddInput(input) { session.addInput(input) }
 
@@ -162,15 +177,22 @@ import UIKit
             previewLayer.frame = container.bounds
             container.layer.addSublayer(previewLayer)
 
+            NSLog("[SLMQR]   [main thread] Adding container to key window...")
             window.addSubview(container)
             self.embeddedPreviewView = container
             self.embeddedSession = session
+            NSLog("[SLMQR]   [main thread] Container added. Window subviews count: %d", window.subviews.count)
 
-            DispatchQueue.global(qos: .userInitiated).async { session.startRunning() }
+            NSLog("[SLMQR]   [main thread] Starting capture session...")
+            DispatchQueue.global(qos: .userInitiated).async {
+                session.startRunning()
+                NSLog("[SLMQR]   [bg thread] Capture session running: %d", session.isRunning)
+            }
 
             let info: [String: Any] = ["opened": true]
             let result = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: info)
             self.commandDelegate.send(result, callbackId: command.callbackId)
+            NSLog("[SLMQR]   [main thread] openQRPreview SUCCESS sent to JS")
         }
     }
 
@@ -243,13 +265,22 @@ import UIKit
     // MARK: - Fullscreen Scanner
 
     private func openScanner(options: [String: Any]) {
+        NSLog("[SLMQR] ======== openScanner() ========")
         let template = options["template"] as? String ?? "simple"
         let showFlashlight = options["flashlight"] as? Bool ?? true
         let shouldVibrate = options["vibrate"] as? Bool ?? true
         let cameraPosition = options["camera"] as? String ?? "back"
         let title = options["title"] as? String ?? (scanMode == "qr" ? "Escanea el codigo QR" : "Escanea el codigo de barras")
 
+        NSLog("[SLMQR]   template: %@", template)
+        NSLog("[SLMQR]   flashlight: %d", showFlashlight)
+        NSLog("[SLMQR]   vibrate: %d", shouldVibrate)
+        NSLog("[SLMQR]   camera: %@", cameraPosition)
+        NSLog("[SLMQR]   title: %@", title)
+        NSLog("[SLMQR]   scanMode: %@", self.scanMode)
+
         DispatchQueue.main.async {
+            NSLog("[SLMQR]   [main thread] Creating SLMQRScannerViewController...")
             let scannerVC = SLMQRScannerViewController()
             scannerVC.template = template
             scannerVC.showFlashlight = showFlashlight
@@ -260,24 +291,43 @@ import UIKit
             scannerVC.modalPresentationStyle = .fullScreen
 
             scannerVC.onScanResult = { [weak self] result in
-                guard let self = self, let callbackId = self.scanCallbackId else { return }
+                NSLog("[SLMQR]   onScanResult called: %@", result)
+                guard let self = self, let callbackId = self.scanCallbackId else {
+                    NSLog("[SLMQR]   WARNING: self or callbackId is nil")
+                    return
+                }
                 let pluginResult = CDVPluginResult(status: CDVCommandStatus_OK, messageAs: result)
                 self.commandDelegate.send(pluginResult, callbackId: callbackId)
                 self.scanCallbackId = nil
             }
 
             scannerVC.onCancel = { [weak self] in
+                NSLog("[SLMQR]   onCancel called")
                 guard let self = self, let callbackId = self.scanCallbackId else { return }
                 let pluginResult = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Escaneo cancelado por el usuario")
                 self.commandDelegate.send(pluginResult, callbackId: callbackId)
                 self.scanCallbackId = nil
             }
 
+            NSLog("[SLMQR]   [main thread] Walking VC chain to find topmost...")
             var topVC: UIViewController? = self.viewController
+            NSLog("[SLMQR]   [main thread] self.viewController: %@", String(describing: self.viewController))
             while let presented = topVC?.presentedViewController {
+                NSLog("[SLMQR]   [main thread]   -> presented: %@", String(describing: presented))
                 topVC = presented
             }
-            topVC?.present(scannerVC, animated: true)
+            NSLog("[SLMQR]   [main thread] topVC: %@", String(describing: topVC))
+
+            if let vc = topVC {
+                NSLog("[SLMQR]   [main thread] Presenting scannerVC from topVC...")
+                vc.present(scannerVC, animated: true) {
+                    NSLog("[SLMQR]   [main thread] scannerVC presented successfully!")
+                }
+            } else {
+                NSLog("[SLMQR]   [main thread] ERROR: topVC is nil, cannot present!")
+                let pluginResult = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "No se pudo presentar el escaner: viewController es nil")
+                self.commandDelegate.send(pluginResult, callbackId: self.scanCallbackId ?? "")
+            }
         }
     }
 
@@ -397,22 +447,32 @@ class SLMQRScannerViewController: UIViewController, AVCaptureMetadataOutputObjec
     // MARK: - Camera Setup
 
     private func setupCamera() {
+        NSLog("[SLMQR:Scanner] ======== setupCamera() ========")
         let session = AVCaptureSession()
         session.sessionPreset = .high
 
         let position: AVCaptureDevice.Position = useFrontCamera ? .front : .back
+        NSLog("[SLMQR:Scanner]   position: %@", useFrontCamera ? "front" : "back")
+
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position) else {
+            NSLog("[SLMQR:Scanner]   ERROR: Camera device not available!")
             dismissWithError("Camara no disponible")
             return
         }
+        NSLog("[SLMQR:Scanner]   Camera device: %@", device.localizedName)
 
         guard let input = try? AVCaptureDeviceInput(device: device) else {
+            NSLog("[SLMQR:Scanner]   ERROR: Could not create device input!")
             dismissWithError("No se pudo acceder a la camara")
             return
         }
+        NSLog("[SLMQR:Scanner]   Device input created")
 
         if session.canAddInput(input) {
             session.addInput(input)
+            NSLog("[SLMQR:Scanner]   Input added to session")
+        } else {
+            NSLog("[SLMQR:Scanner]   WARNING: Cannot add input to session!")
         }
 
         let output = AVCaptureMetadataOutput()
@@ -422,21 +482,28 @@ class SLMQRScannerViewController: UIViewController, AVCaptureMetadataOutputObjec
 
             if scanMode == "qr" {
                 output.metadataObjectTypes = [.qr]
+                NSLog("[SLMQR:Scanner]   Output configured for QR only")
             } else {
                 output.metadataObjectTypes = [.ean8, .ean13, .upce, .code39, .code93, .code128, .pdf417, .aztec, .itf14, .dataMatrix, .interleaved2of5]
+                NSLog("[SLMQR:Scanner]   Output configured for barcodes")
             }
+        } else {
+            NSLog("[SLMQR:Scanner]   WARNING: Cannot add output to session!")
         }
 
         let previewLayer = AVCaptureVideoPreviewLayer(session: session)
         previewLayer.videoGravity = .resizeAspectFill
         previewLayer.frame = view.bounds
         view.layer.addSublayer(previewLayer)
+        NSLog("[SLMQR:Scanner]   Preview layer added, frame: %@", NSCoder.string(for: view.bounds))
 
         self.captureSession = session
         self.previewLayer = previewLayer
 
         DispatchQueue.global(qos: .userInitiated).async {
+            NSLog("[SLMQR:Scanner]   Starting capture session...")
             session.startRunning()
+            NSLog("[SLMQR:Scanner]   Capture session running: %d", session.isRunning)
         }
     }
 
